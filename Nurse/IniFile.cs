@@ -17,45 +17,25 @@ using System.Collections.Generic;
 		prop=?
 */
 
+/*
+	If allowInvalidFile option is enabled then:
+		- File can contain invalid identifiers
+		- File can contain no sections
+*/
+
 namespace Nurse
 {
-	public class IniSection
-	{
-		public string Name { get; protected set; }
-		public List<KeyValuePair<string, string>> Properties { get; protected set; }
-
-		public string this[string key]
-		{
-			get
-			{
-				return GetValue(key);
-			}
-		}
-
-		public IniSection(string name)
-		{
-			this.Name = name;
-			Properties = new List<KeyValuePair<string, string>>();
-		}
-
-		public string GetValue(string key)
-		{
-			return Properties.Find((KeyValuePair<string, string> prop) => { return prop.Key.Equals(key); }).Value;
-		}
-	}
-
 	/// <summary>
-	/// Main class
+	/// Represents ini file
 	/// </summary>
 	public class IniFile
     {
-		public List<IniSection> Sections { get; private set; }
-		public IniSection Root { get { return root; } }
+		public Dictionary<string, IniSection> Sections { get; private set; }
+		
+		private IniSection _emptySection = new IniSection() { Exists = false };
+		private IniSection _currentSection;
 
-		private IniSection root;
-		private IniSection currentSection;
-
-		private IniSection emptySection = new IniSection("");
+		private bool _allowInvalidFile = false;
 
 		public IniSection this[string key]
 		{
@@ -65,131 +45,143 @@ namespace Nurse
 			}
 		}
 
+		public string this[string section, string option]
+		{
+			get
+			{
+				var s = GetSection(section);
+
+				if (!s.Exists)
+					return null;
+
+				return s.GetValue<string>(option);
+			}
+		}
+
 		public IniFile()
 		{
-			Sections = new List<IniSection>(1);
-			Sections.Add(new IniSection(string.Empty));
-
-			root = Sections[0];
-			currentSection = root;
+			Sections = new Dictionary<string, IniSection>();
 		}
 
 		/// <summary>
 		/// Open and parse the file
 		/// </summary>
 		/// <param name="path">Path to ini file</param>
-		public void Open(string path)
+		/// <param name="allowInvalidFile">Allows ini file to be a little invalid</param>
+		public void ReadFile(string path, bool allowInvalidFile = false)
 		{
 			if (string.IsNullOrWhiteSpace(path))
 				throw new ArgumentException("Path is empty or null", "path");
 
 			string source = File.ReadAllText(path);
 
-			Parse(source);
+			ReadString(source, allowInvalidFile);
 		}
 
 		/// <summary>
 		/// Parse string
 		/// </summary>
 		/// <param name="source">Ini data</param>
-		public void Parse(string source)
+		/// <param name="allowInvalidFile">Allows ini file to be a little invalid</param>
+		public void ReadString(string source, bool allowInvalidFile = false)
 		{
 			if (source == null)
 				throw new ArgumentNullException("source", "Source is null");
 
+			if (string.IsNullOrWhiteSpace(source))
+				return;
+
+			_allowInvalidFile = allowInvalidFile;
+
 			string[] raw = source.Split('\n');
 
 			foreach(string line in raw)
-			{
-				string prepLine = line.Trim();
-
-				ParseLine(prepLine);
-			}
+				ParseLine(line);
 		}
 
 		private void ParseLine(string line)
 		{
-			if (string.IsNullOrEmpty(line))
+			var prepLine = line.TrimStart().TrimEnd();
+
+			if (string.IsNullOrEmpty(prepLine))
 				return;
 
-			if (line.StartsWith("[") && line.EndsWith("]")) // Section
+			if (prepLine.StartsWith("[")) // Section
 			{
-				line = line.Substring(1, line.Length - 2);
+				var commIndex = prepLine.IndexOf(';'); // Check if we have comment on the line
+				var endIndex = prepLine.IndexOf(']');
 
-				currentSection = new IniSection(line);
-				Sections.Add(currentSection);
+				if (commIndex > -1) // We have comment
+				{
+					if (endIndex > commIndex && !_allowInvalidFile) // "]" is in comment
+					{
+						throw new Exception("Invalid file");
+					}
+				}
+
+				var sectionName = line.Substring(1, endIndex - 1);
+
+				if (!_allowInvalidFile && !sectionName.IsValidIdentifier())
+					throw new Exception("Invalid file");
+
+				_currentSection = new IniSection() { Exists = true };
+				Sections.Add(sectionName, _currentSection);
 
 				return;
 			}
-			else if(line.StartsWith(";") || line.StartsWith("#")) // Comment
+			else if(prepLine.StartsWith(";") || prepLine.StartsWith("#")) // Comment
 			{
 				return;
 			}
 			else
 			{
-				if(!line.Contains("\""))
+				var eqIndex = prepLine.IndexOf('=');
+				var commIndex1 = prepLine.IndexOf(';');
+				var commIndex2 = prepLine.IndexOf('#');
+
+				if (eqIndex > -1)
 				{
-					int index = line.IndexOf(';');
+					var identifier = prepLine.Substring(0, eqIndex).TrimEnd();
 
-					if(index > 0)
-						line = line.Substring(0, index);
-				}
+					if (!_allowInvalidFile && !identifier.IsValidIdentifier())
+						throw new Exception("Invalid file");
 
-				string[] keyVal = line.Split('=');
-				string key = keyVal[0];
-				string value = string.Empty;
+					var value = prepLine.Substring(eqIndex + 1);
 
-				if(keyVal.Length > 1)
-				{
-					if (keyVal[1].StartsWith("\""))
+					if (commIndex1 > -1 || commIndex2 > -1)
 					{
-						if(keyVal[1].EndsWith("\""))
-						{
-							value = keyVal[1].Substring(1, keyVal[1].Length - 2);
-						}
-						else
-						{
-							value = keyVal[1];
-						}						
+						value = value.Substring(0, value.Length - (commIndex1 > -1 ? commIndex1 : commIndex2));
+					}
+
+					_currentSection.Options.Add(identifier, value.TrimStart().TrimEnd());
+				}
+				else
+				{
+					if (!_allowInvalidFile)
+						throw new Exception("Invalid file");
+
+					if (commIndex1 > -1 || commIndex2 > -1)
+					{
+						_currentSection.Options.Add(prepLine.Substring(0, prepLine.Length - (commIndex1 > -1 ? commIndex1 : commIndex2)), null);
 					}
 					else
 					{
-						value = keyVal[1];
+						_currentSection.Options.Add(prepLine, null);
 					}
 				}
 
-				currentSection.Properties.Add(new KeyValuePair<string, string>(key, value));
+				return;
 			}
 		}
 
 		public IniSection GetSection(string key)
 		{
-			if (string.IsNullOrEmpty(key))
-				return root;
+			IniSection section;
 
-			IniSection result = Sections.Find((IniSection section) => { return section.Name.Equals(key); });
+			if (Sections.TryGetValue(key, out section))
+				return section;
 
-			return result != null ? result : emptySection;
-		}
-
-		public string GetValue(string section, string key)
-		{
-			return GetSection(section).GetValue(key);
-		}
-
-		/// <summary>
-		/// Returns true if ini files has differences
-		/// </summary>
-		/// <param name="ini"></param>
-		/// <returns></returns>
-		public bool Diff(IniFile ini, StringComparison comparison = StringComparison.CurrentCulture)
-		{
-			if (ini.Sections.Count != Sections.Count)
-				return true;
-
-			// Make this
-
-			return false;
+			return _emptySection;
 		}
 	}
 }
